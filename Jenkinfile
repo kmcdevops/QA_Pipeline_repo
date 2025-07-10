@@ -1,1 +1,90 @@
+pipeline {
+  agent any
+
+  environment {
+    SONAR_PROJECT_KEY = 'javaapp'
+    SONAR_HOST_URL = 'http://<SONARQUBE_IP>:9000'
+    SONAR_AUTH_TOKEN = credentials('sonarqube-token')
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps {
+        git url: 'https://github.com/your-username/your-repo.git', branch: 'main'
+      }
+    }
+
+    stage('Build') {
+      steps {
+        dir('javaapp-tomcat') {
+          sh 'mvn clean package -DskipTests'
+        }
+      }
+    }
+
+    stage('Upload to Artifactory') {
+      steps {
+        dir('javaapp-tomcat/target') {
+          script {
+            def server = Artifactory.server('jfrog')
+            def uploadSpec = """{
+              "files": [{
+                "pattern": "artisantek-app.war",
+                "target": "libs-release-local/chandu/com/artisantek/java-tomcat-21/1.0.1/"
+              }]
+            }"""
+            server.upload(uploadSpec)
+          }
+        }
+      }
+    }
+
+    stage('Scan with SonarQube') {
+      steps {
+        dir('javaapp-tomcat') {
+          withSonarQubeEnv('MySonarQube') {
+            sh "mvn sonar:sonar -Dsonar.projectKey=${SONAR_PROJECT_KEY} -Dsonar.host.url=${SONAR_HOST_URL} -Dsonar.login=${SONAR_AUTH_TOKEN}"
+          }
+        }
+      }
+    }
+
+    stage('Test') {
+      steps {
+        dir('javaapp-tomcat') {
+          sh 'mvn test'
+        }
+      }
+    }
+
+    stage('Deploy to Tomcat') {
+      steps {
+        dir('javaapp-tomcat/target') {
+          withCredentials([
+            usernamePassword(
+              credentialsId: 'jfrog-u.name-u.passwd',
+              usernameVariable: 'ART_USER',
+              passwordVariable: 'ART_PASS'
+            )
+          ]) {
+            sh """
+              curl -u ${ART_USER}:${ART_PASS} -O "http://18.143.130.217:8082/artifactory/libs-release-local/chandu/com/artisantek/java-tomcat-21/1.0.1/artisantek-app.war"
+              sudo systemctl stop tomcat
+              sudo cp artisantek-app.war /home/ubuntu/tomcat9/webapps/ROOT.war
+              sudo systemctl start tomcat
+              sleep 5
+              if ss -tulnp | grep -q ':9050'; then
+                echo "Tomcat is listening on port 9050"
+              else
+                echo "Tomcat is NOT listening on port 9050"
+                exit 1
+              fi
+            """
+          }
+        }
+      }
+    }
+  }
+}
 
